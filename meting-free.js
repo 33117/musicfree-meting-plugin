@@ -1,6 +1,10 @@
 /**
  * Meting 聚合音源插件 for MusicFree（新版 Hono / metowolf-Meting-API 适配）
  *
+ * v1.4.2 更新：
+ *   - 修复榜单/推荐歌单图标都一样：歌单封面字段误用 artwork（歌曲字段），
+ *     应为 coverImg（歌单/榜单字段）。已改回 coverImg，图标正常显示。
+ *
  * v1.4.1 更新：
  *   - 修复「无法解析」：v1.4.0 在 search() 里用了异步箭头 IIFE `(async()=>{})()`
  *     和跨行模板字符串，部分机型 MusicFree（Hermes）解析失败导致插件装不上。
@@ -81,7 +85,7 @@ const RANKINGS = [
 ];
 
 // 插件自身版本 + 远程更新地址（自动更新用）。
-const CURRENT_VERSION = '1.4.1';
+const CURRENT_VERSION = '1.4.2';
 const SRC_URL = 'https://cdn.jsdelivr.net/gh/33117/musicfree-meting-plugin@main/meting-free.js';
 
 // 读取用户变量（自建地址 / 鉴权令牌）。兼容沙箱/本地测试环境。
@@ -432,11 +436,13 @@ async function importMusicSheet(urlLike) {
 // ===== 榜单（排行榜 tab）& 推荐歌单（推荐歌单 tab）=====
 
 // 把 RANKINGS 转成 IMusicSheetItem（供推荐歌单/歌单列表复用，含封面）
+// 注意：歌单/榜单的封面字段是 coverImg（不是 artwork，artwork 是歌曲的封面字段）
 function rankingToSheet(r) {
   return {
     id: r.id,
     title: r.title,
     platform: 'Meting 聚合源',
+    coverImg: r.cover || '',
     artwork: r.cover || '',
     _server: r.server,
   };
