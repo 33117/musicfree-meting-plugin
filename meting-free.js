@@ -1,6 +1,11 @@
 /**
  * Meting 聚合音源插件 for MusicFree（新版 Hono / metowolf-Meting-API 适配）
  *
+ * v1.4.1 更新：
+ *   - 修复「无法解析」：v1.4.0 在 search() 里用了异步箭头 IIFE `(async()=>{})()`
+ *     和跨行模板字符串，部分机型 MusicFree（Hermes）解析失败导致插件装不上。
+ *     已改回 v1.3.0 已验证可用的写法（.then 链 + 字符串拼接），功能不变。
+ *
  * v1.4.0 更新：
  *   - 修复搜索搜不到：原公共兜底 bilibili.uno 已失效（实测不可达）。新增
  *     「网易云官方搜索接口」(music.163.com/api/search，已真机验证、高可用)
@@ -76,7 +81,7 @@ const RANKINGS = [
 ];
 
 // 插件自身版本 + 远程更新地址（自动更新用）。
-const CURRENT_VERSION = '1.4.0';
+const CURRENT_VERSION = '1.4.1';
 const SRC_URL = 'https://cdn.jsdelivr.net/gh/33117/musicfree-meting-plugin@main/meting-free.js';
 
 // 读取用户变量（自建地址 / 鉴权令牌）。兼容沙箱/本地测试环境。
@@ -253,14 +258,15 @@ async function search(query, page, type) {
   }
 
   // ② 网易云官方搜索（高可用保底，覆盖华语主力；已真机验证，不依赖第三方实例）
+  // 用 .then 链（v1.3.0 已验证可用的写法），避免异步箭头 IIFE（Hermes 兼容性问题）
   tasks.push(
-    (async () => {
-      try {
-        const res = await axios.get(NETEASE_OFFICIAL_SEARCH, {
-          params: { s: query, type: 1, limit: PER_PAGE, offset: (page - 1) * PER_PAGE },
-          headers: { Referer: 'https://music.163.com/', 'User-Agent': 'Mozilla/5.0' },
-          timeout: 9000,
-        });
+    axios
+      .get(NETEASE_OFFICIAL_SEARCH, {
+        params: { s: query, type: 1, limit: PER_PAGE, offset: (page - 1) * PER_PAGE },
+        headers: { Referer: 'https://music.163.com/', 'User-Agent': 'Mozilla/5.0' },
+        timeout: 9000,
+      })
+      .then((res) => {
         const songs = (res.data && res.data.result && res.data.result.songs) || [];
         neteaseCount = songs.length;
         for (const s of songs) {
@@ -280,23 +286,26 @@ async function search(query, page, type) {
             _base: '', // 播放时走 apiBase(若有) → injahow
           });
         }
-      } catch (e) {
-        /* 网络不可达时忽略，公共池可能仍可用 */
-      }
-    })()
+      })
+      .catch(() => {})
   );
 
   // ③ 公共 MetingAPI classic 实例池（QQ/酷狗/百度/酷我 尽力兜底，失效静默跳过）
+  // 用字符串拼接（v1.3.0 已验证可用的写法），避免跨行模板字符串（Hermes 兼容性问题）
   for (const base of CLASSIC_SEARCH_APIS) {
     for (const server of SOURCES) {
+      const url =
+        base.replace(/\/+$/, '') +
+        '/?type=search&source=' +
+        server +
+        '&name=' +
+        encodeURIComponent(query) +
+        '&limit=' +
+        PER_PAGE +
+        '&pages=1';
       tasks.push(
         axios
-          .get(
-            `${base.replace(/\/+$/, '')}/?type=search&source=${server}&name=${encodeURIComponent(
-              query
-            )}&limit=${PER_PAGE}&pages=1`,
-            { timeout: 7000 }
-          )
+          .get(url, { timeout: 7000 })
           .then((res) => pushParsed(Array.isArray(res.data) ? res.data : [], '', server))
           .catch(() => {})
       );
