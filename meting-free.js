@@ -77,7 +77,7 @@ const RANKINGS = [
 
 // 插件自身版本 + 远程更新地址（自动更新用）。
 const CURRENT_VERSION = '1.4.0';
-const SRC_URL = 'https://raw.githubusercontent.com/33117/musicfree-meting-plugin/main/meting-free.js';
+const SRC_URL = 'https://cdn.jsdelivr.net/gh/33117/musicfree-meting-plugin@main/meting-free.js';
 
 // 读取用户变量（自建地址 / 鉴权令牌）。兼容沙箱/本地测试环境。
 function getUserVar(key) {
