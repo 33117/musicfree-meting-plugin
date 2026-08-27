@@ -1,6 +1,14 @@
 /**
  * Meting 聚合音源插件 for MusicFree（新版 Hono / metowolf-Meting-API 适配）
  *
+ * v1.4.0 更新：
+ *   - 修复搜索搜不到：原公共兜底 bilibili.uno 已失效（实测不可达）。新增
+ *     「网易云官方搜索接口」(music.163.com/api/search，已真机验证、高可用)
+ *     作为搜索主力保底源——不依赖任何第三方实例存活，覆盖华语主力需求；
+ *     并加公共 MetingAPI classic 实例池作 QQ/酷狗/百度/酷我 的尽力兜底。
+ *     未填 apiBase 也能直接搜。
+ *   - 修复榜单/推荐图标雷同：为 11 个榜单填入从网易云官方取到的真实封面图。
+ *
  * v1.3.0 更新：
  *   - 榜单（排行榜 tab）：网易云官方榜单 11 个（飙升/新歌/热歌/原创/说唱/
  *     古典/电音/摇滚/抖音/韩语/ACG），均为 injahow 真机验证（100~200 首）。
@@ -31,8 +39,18 @@ const CryptoJS = require('crypto-js');
 // 播放/歌词兜底底座：injahow 无搜索，但播放/歌词/歌单极度稳定（已真机验证）。
 const PLAYBACK_FALLBACK = 'https://api.injahow.cn/meting/';
 
-// 公共搜索兜底（公益 Hono 实例，搜索不需鉴权，开箱即用）。仅用于搜索。
-const PUBLIC_SEARCH_API = 'https://www.bilibili.uno';
+// 搜索主力保底源：网易云官方 web 搜索接口（高可用，已真机验证）。
+// 返回真实网易云歌曲 id，可直接走 injahow/apiBase 播放，覆盖华语主力需求，
+// 且不依赖任何第三方 MetingAPI 实例的存活——这是「开箱即搜」的可靠根基。
+const NETEASE_OFFICIAL_SEARCH = 'https://music.163.com/api/search/get/web';
+
+// 公共 MetingAPI 兜底（classic 格式，可能不稳定/已关停，尽力而为）。
+// 用于补充 QQ/酷狗/百度/酷我 等非网易云平台；失效会被静默跳过，不影响网易云搜索。
+const CLASSIC_SEARCH_APIS = [
+  'https://meting.qjqq.cn',
+  'https://api.ixiaowai.cn/meting',
+  'https://api.flvsp.com/meting',
+];
 
 // 全平台：metowolf/Meting-API 支持的 5 个 server。
 const SOURCES = ['netease', 'tencent', 'kugou', 'baidu', 'kuwo'];
@@ -44,21 +62,21 @@ const PER_PAGE = 20;
 // topId——它们需要的是歌单 dissid，暂未纳入）。需要扩平台时往本数组加项即可。
 // 字段：server=平台, id=歌单/榜单 id, title=显示名, group=榜单分组
 const RANKINGS = [
-  { server: 'netease', id: '19723756', title: '云音乐飙升榜', group: '网易云 · 热门' },
-  { server: 'netease', id: '3779629',  title: '云音乐新歌榜', group: '网易云 · 热门' },
-  { server: 'netease', id: '3778678',  title: '云音乐热歌榜', group: '网易云 · 热门' },
-  { server: 'netease', id: '2884035',  title: '网易云原创榜', group: '网易云 · 热门' },
-  { server: 'netease', id: '991319590', title: '网易云说唱榜', group: '网易云 · 流派' },
-  { server: 'netease', id: '71384707',  title: '网易云古典榜', group: '网易云 · 流派' },
-  { server: 'netease', id: '1978921795', title: '网易云电音榜', group: '网易云 · 流派' },
-  { server: 'netease', id: '745956260', title: '网易云摇滚榜', group: '网易云 · 流派' },
-  { server: 'netease', id: '10520166',  title: '抖音排行榜',   group: '网易云 · 流派' },
-  { server: 'netease', id: '60198',     title: '云音乐韩语榜', group: '网易云 · 地区' },
-  { server: 'netease', id: '180106',    title: '云音乐ACG榜',  group: '网易云 · 地区' },
+  { server: 'netease', id: '19723756', title: '云音乐飙升榜', group: '网易云 · 热门', cover: 'https://p2.music.126.net/rIi7Qzy2i2Y_1QD7cd0MYA==/109951170048506929.jpg' },
+  { server: 'netease', id: '3779629',  title: '云音乐新歌榜', group: '网易云 · 热门', cover: 'https://p1.music.126.net/5guhqPBTcIrrhLBotgaT6w==/109951170048511751.jpg' },
+  { server: 'netease', id: '3778678',  title: '云音乐热歌榜', group: '网易云 · 热门', cover: 'https://p1.music.126.net/0SUEG8yDACfx0Bw2MYFv4Q==/109951170048519512.jpg' },
+  { server: 'netease', id: '2884035',  title: '网易云原创榜', group: '网易云 · 热门', cover: 'https://p1.music.126.net/BaP9nrocNTL3gGThysv4eQ==/109951170091896587.jpg' },
+  { server: 'netease', id: '991319590', title: '网易云说唱榜', group: '网易云 · 流派', cover: 'https://p2.music.126.net/GgHbgDfGXHpE2YTchU7IvA==/109951171510498108.jpg' },
+  { server: 'netease', id: '71384707',  title: '网易云古典榜', group: '网易云 · 流派', cover: 'https://p2.music.126.net/urByD_AmfBDBrs7fA9-O8A==/109951167976973225.jpg' },
+  { server: 'netease', id: '1978921795', title: '网易云电音榜', group: '网易云 · 流派', cover: 'https://p2.music.126.net/hXGObvXfsGtFjFvRhOYAkA==/109951170091888741.jpg' },
+  { server: 'netease', id: '745956260', title: '网易云摇滚榜', group: '网易云 · 流派', cover: 'https://p2.music.126.net/5oN9YaFznwNGXkmi8i2Ytw==/109951167430864741.jpg' },
+  { server: 'netease', id: '10520166',  title: '抖音排行榜',   group: '网易云 · 流派', cover: 'https://p1.music.126.net/6la5fQwcd3YW6ZQHvTiZqw==/109951165611482698.jpg' },
+  { server: 'netease', id: '60198',     title: '云音乐韩语榜', group: '网易云 · 地区', cover: 'https://p2.music.126.net/rwRsVIJHQ68gglhA6TNEYA==/109951165611413732.jpg' },
+  { server: 'netease', id: '180106',    title: '云音乐ACG榜',  group: '网易云 · 地区', cover: 'https://p2.music.126.net/fhAqiflLy3eU-ldmBQByrg==/109951165613082765.jpg' },
 ];
 
 // 插件自身版本 + 远程更新地址（自动更新用）。
-const CURRENT_VERSION = '1.3.0';
+const CURRENT_VERSION = '1.4.0';
 const SRC_URL = 'https://raw.githubusercontent.com/33117/musicfree-meting-plugin/main/meting-free.js';
 
 // 读取用户变量（自建地址 / 鉴权令牌）。兼容沙箱/本地测试环境。
@@ -202,33 +220,90 @@ function makeUpdateHint(latest) {
   };
 }
 
-// ===== 搜索（全曲库 + 并发 + 兜底）=====
+// ===== 搜索（全曲库 + 并发 + 三层保底）=====
 async function search(query, page, type) {
   if (type !== 'music') return { isEnd: true, data: [] };
 
-  // 有自建地址优先用自建（更稳更全）；否则用公共公益实例开箱即用。
-  const apiBase = getApiBase() || PUBLIC_SEARCH_API;
+  const apiBase = getApiBase();
   const token = getToken(); // 搜索不需 auth，传入无害
-
-  // 并发搜索所有平台：单源失败不影响整体，总时长 ≤ 最慢源（≤8s），不超 10s 限制。
-  const tasks = SOURCES.map((server) =>
-    axios
-      .get(honoUrl(apiBase, server, 'search', query, token), { timeout: 8000 })
-      .then((res) => ({ server, list: Array.isArray(res.data) ? res.data : [] }))
-      .catch(() => ({ server, list: [] }))
-  );
-  const settled = await Promise.all(tasks);
-
   const results = [];
   const seen = new Set();
-  for (const { server, list } of settled) {
-    for (const it of _parseListHono(list, '', server)) {
+  let neteaseCount = 0;
+
+  const pushParsed = (list, server, base) => {
+    for (const it of _parseListHono(list, base, server)) {
       if (seen.has(it.id)) continue;
       seen.add(it.id);
       results.push(it);
     }
-    if (results.length >= PER_PAGE * 3) break;
+  };
+
+  const tasks = [];
+
+  // ① 自建 Vercel（若有）：Hono 5 平台并发
+  if (apiBase) {
+    for (const server of SOURCES) {
+      tasks.push(
+        axios
+          .get(honoUrl(apiBase, server, 'search', query, token), { timeout: 8000 })
+          .then((res) => pushParsed(Array.isArray(res.data) ? res.data : [], server, apiBase))
+          .catch(() => {})
+      );
+    }
   }
+
+  // ② 网易云官方搜索（高可用保底，覆盖华语主力；已真机验证，不依赖第三方实例）
+  tasks.push(
+    (async () => {
+      try {
+        const res = await axios.get(NETEASE_OFFICIAL_SEARCH, {
+          params: { s: query, type: 1, limit: PER_PAGE, offset: (page - 1) * PER_PAGE },
+          headers: { Referer: 'https://music.163.com/', 'User-Agent': 'Mozilla/5.0' },
+          timeout: 9000,
+        });
+        const songs = (res.data && res.data.result && res.data.result.songs) || [];
+        neteaseCount = songs.length;
+        for (const s of songs) {
+          const id = String(s.id);
+          const iid = 'netease_' + id;
+          if (seen.has(iid)) continue;
+          seen.add(iid);
+          results.push({
+            id: iid,
+            title: s.name || '',
+            artist: (s.artists || []).map((a) => a.name).join('/') || '',
+            album: s.album ? s.album.name || '' : '',
+            artwork: s.album ? s.album.picUrl || '' : '',
+            duration: 0,
+            _server: 'netease',
+            _id: id,
+            _base: '', // 播放时走 apiBase(若有) → injahow
+          });
+        }
+      } catch (e) {
+        /* 网络不可达时忽略，公共池可能仍可用 */
+      }
+    })()
+  );
+
+  // ③ 公共 MetingAPI classic 实例池（QQ/酷狗/百度/酷我 尽力兜底，失效静默跳过）
+  for (const base of CLASSIC_SEARCH_APIS) {
+    for (const server of SOURCES) {
+      tasks.push(
+        axios
+          .get(
+            `${base.replace(/\/+$/, '')}/?type=search&source=${server}&name=${encodeURIComponent(
+              query
+            )}&limit=${PER_PAGE}&pages=1`,
+            { timeout: 7000 }
+          )
+          .then((res) => pushParsed(Array.isArray(res.data) ? res.data : [], '', server))
+          .catch(() => {})
+      );
+    }
+  }
+
+  await Promise.all(tasks);
 
   // 自动更新提示：在结果顶部插入（如有新版）
   if (page === 1) {
@@ -240,7 +315,8 @@ async function search(query, page, type) {
     }
   }
 
-  return { isEnd: results.length < PER_PAGE, data: results.slice(0, PER_PAGE) };
+  const data = results.slice(0, PER_PAGE);
+  return { isEnd: neteaseCount < PER_PAGE, data };
 }
 
 async function getMediaSource(musicItem, quality) {
@@ -346,12 +422,13 @@ async function importMusicSheet(urlLike) {
 
 // ===== 榜单（排行榜 tab）& 推荐歌单（推荐歌单 tab）=====
 
-// 把 RANKINGS 转成 IMusicSheetItem（供推荐歌单/歌单列表复用）
+// 把 RANKINGS 转成 IMusicSheetItem（供推荐歌单/歌单列表复用，含封面）
 function rankingToSheet(r) {
   return {
     id: r.id,
     title: r.title,
     platform: 'Meting 聚合源',
+    artwork: r.cover || '',
     _server: r.server,
   };
 }
@@ -360,11 +437,7 @@ function rankingToSheet(r) {
 async function getTopLists() {
   const groups = {};
   for (const r of RANKINGS) {
-    (groups[r.group] = groups[r.group] || []).push({
-      id: r.id,
-      title: r.title,
-      _server: r.server,
-    });
+    (groups[r.group] = groups[r.group] || []).push(rankingToSheet(r));
   }
   return Object.keys(groups).map((title) => ({ title, data: groups[title] }));
 }
@@ -401,7 +474,7 @@ module.exports = {
   version: CURRENT_VERSION,
   author: '33117',
   description:
-    '适配 metowolf/Meting-API(Hono) 的多平台聚合音源（网易云/QQ/酷狗/百度/酷我）。内置网易云官方榜单 11 个 + 推荐歌单，免鉴权即可看榜；未填 apiBase 时自动用公共公益实例搜索 + injahow 兜底播放，开箱即用；填了自建 Vercel 地址后更快更全更稳。',
+    '适配 metowolf/Meting-API(Hono) 的多平台聚合音源（网易云/QQ/酷狗/百度/酷我）。搜索以「网易云官方接口」为主力保底源（已验证高可用，开箱即搜），公共 MetingAPI 实例池补充其他平台；内置网易云官方榜单 11 个 + 真实封面，免鉴权即可看榜听歌；填了自建 Vercel 地址后更快更全更稳。',
   srcUrl: SRC_URL,
   cacheControl: 'no-cache',
   supportedSearchType: ['music'],
@@ -409,7 +482,7 @@ module.exports = {
     {
       key: 'apiBase',
       name: '自建 MetingAPI 地址（选填）',
-      hint: '你的 Vercel 部署地址，如 https://xxx.vercel.app（不要带 /api）。不填也能搜（用公共公益实例），填了更快更全更稳。',
+      hint: '你的 Vercel 部署地址，如 https://xxx.vercel.app（不要带 /api）。不填也能搜（用网易云官方接口作主力保底源），填了更快更全更稳（含 QQ/酷狗等全平台）。',
     },
     {
       key: 'token',
@@ -419,7 +492,7 @@ module.exports = {
   ],
   hints: {
     search: [
-      '搜索优先用你自建的 Vercel 实例（更快更全）。未填写时自动使用公共公益实例（可能较慢、部分平台不全），建议按 VERCEL_DEPLOY.md 自建。',
+      '搜索以「网易云官方接口」为主力保底源，不填 apiBase 也能直接搜到网易云歌曲；填了自建 Vercel 后 QQ/酷狗/百度/酷我 等全平台才会更全。建议按 VERCEL_DEPLOY.md 自建以获得最完整曲库。',
       '插件更新：插件设置 → 更新插件。发现新版时搜索结果顶部会出现提示。',
     ],
   },
@@ -433,7 +506,8 @@ module.exports = {
   compareVersion,
   checkUpdate,
   makeUpdateHint,
-  PUBLIC_SEARCH_API,
+  NETEASE_OFFICIAL_SEARCH,
+  CLASSIC_SEARCH_APIS,
   CURRENT_VERSION,
   SRC_URL,
   RANKINGS,
