@@ -1,11 +1,13 @@
 /**
  * Meting 聚合音源插件 for MusicFree（新版 Hono / metowolf-Meting-API 适配）
  *
- * v1.2.0 更新：
- *   - 搜索「全曲库」：扩展至 metowolf/Meting-API 支持的 5 个平台
- *     （网易云/QQ/酷狗/百度/酷我），多源并发、合并去重、单源失败不影响整体。
- *   - 开箱即用：未填 apiBase 时，搜索自动回退到公共公益 Hono 实例
- *     （bilibili.uno，搜索不需鉴权）；播放/歌词回退到 injahow。
+ * v1.3.0 更新：
+ *   - 榜单（排行榜 tab）：网易云官方榜单 11 个（飙升/新歌/热歌/原创/说唱/
+ *     古典/电音/摇滚/抖音/韩语/ACG），均为 injahow 真机验证（100~200 首）。
+ *   - 推荐歌单（推荐歌单 tab）：以官方榜单作为推荐内容（MetingAPI 无个性化
+ *     推荐 feed，官方榜单即最稳妥的推荐来源）。两者均走 playlist 接口，免鉴权。
+ *   - 搜索「全曲库」：5 平台并发、合并去重（见 v1.2.0）。
+ *   - 开箱即用：未填 apiBase 时搜索回退公共公益实例、播放/歌词回退 injahow。
  *   - 自动更新：基于 srcUrl 版本自检，发现新版时在搜索结果顶部给出提示。
  *
  * 接口格式（metowolf/Meting-API，Hono）：
@@ -37,8 +39,26 @@ const SOURCES = ['netease', 'tencent', 'kugou', 'baidu', 'kuwo'];
 
 const PER_PAGE = 20;
 
+// ===== 榜单 & 推荐歌单数据 =====
+// 仅网易云官方榜单已真机验证（MetingAPI 的 playlist 接口不接受 QQ/酷狗的
+// topId——它们需要的是歌单 dissid，暂未纳入）。需要扩平台时往本数组加项即可。
+// 字段：server=平台, id=歌单/榜单 id, title=显示名, group=榜单分组
+const RANKINGS = [
+  { server: 'netease', id: '19723756', title: '云音乐飙升榜', group: '网易云 · 热门' },
+  { server: 'netease', id: '3779629',  title: '云音乐新歌榜', group: '网易云 · 热门' },
+  { server: 'netease', id: '3778678',  title: '云音乐热歌榜', group: '网易云 · 热门' },
+  { server: 'netease', id: '2884035',  title: '网易云原创榜', group: '网易云 · 热门' },
+  { server: 'netease', id: '991319590', title: '网易云说唱榜', group: '网易云 · 流派' },
+  { server: 'netease', id: '71384707',  title: '网易云古典榜', group: '网易云 · 流派' },
+  { server: 'netease', id: '1978921795', title: '网易云电音榜', group: '网易云 · 流派' },
+  { server: 'netease', id: '745956260', title: '网易云摇滚榜', group: '网易云 · 流派' },
+  { server: 'netease', id: '10520166',  title: '抖音排行榜',   group: '网易云 · 流派' },
+  { server: 'netease', id: '60198',     title: '云音乐韩语榜', group: '网易云 · 地区' },
+  { server: 'netease', id: '180106',    title: '云音乐ACG榜',  group: '网易云 · 地区' },
+];
+
 // 插件自身版本 + 远程更新地址（自动更新用）。
-const CURRENT_VERSION = '1.2.0';
+const CURRENT_VERSION = '1.3.0';
 const SRC_URL = 'https://raw.githubusercontent.com/33117/musicfree-meting-plugin/main/meting-free.js';
 
 // 读取用户变量（自建地址 / 鉴权令牌）。兼容沙箱/本地测试环境。
@@ -92,7 +112,7 @@ function extractId(urlStr) {
 }
 
 // 解析搜索/列表响应（抽出便于单元测试）
-// 新版字段：{ title, author, url, pic, lrc }
+// 兼容两套字段名：metowolf Hono 用 { title, author }，injahow 兜底用 { name, artist }
 // base 传 '' 表示来源是公共搜索实例（不能用于播放），播放时改走 apiBase/injahow。
 function _parseListHono(list, base, server) {
   const out = [];
@@ -101,10 +121,10 @@ function _parseListHono(list, base, server) {
     if (!id) continue;
     out.push({
       id: server + '_' + id,
-      title: it.title || '',
-      artist: it.author || '',
+      title: it.title != null ? it.title : (it.name || ''),
+      artist: it.author != null ? it.author : (it.artist || ''),
       album: '',
-      artwork: it.pic || '',
+      artwork: it.pic || it.cover || '',
       duration: 0,
       _server: server,
       _id: id,
@@ -324,12 +344,64 @@ async function importMusicSheet(urlLike) {
   return list;
 }
 
+// ===== 榜单（排行榜 tab）& 推荐歌单（推荐歌单 tab）=====
+
+// 把 RANKINGS 转成 IMusicSheetItem（供推荐歌单/歌单列表复用）
+function rankingToSheet(r) {
+  return {
+    id: r.id,
+    title: r.title,
+    platform: 'Meting 聚合源',
+    _server: r.server,
+  };
+}
+
+// 榜单列表（排行榜 tab）：按 group 分组返回
+async function getTopLists() {
+  const groups = {};
+  for (const r of RANKINGS) {
+    (groups[r.group] = groups[r.group] || []).push({
+      id: r.id,
+      title: r.title,
+      _server: r.server,
+    });
+  }
+  return Object.keys(groups).map((title) => ({ title, data: groups[title] }));
+}
+
+// 榜单详情（点某个榜单后）：playlist 接口免鉴权，不填 token 也能看
+async function getTopListDetail(topListItem, page) {
+  if (page > 1) return { isEnd: true, musicList: [] };
+  const server = topListItem._server || 'netease';
+  const list = await _fetchList('playlist', { id: topListItem.id }, server);
+  if (!list) throw new Error('榜单获取失败');
+  return { isEnd: true, musicList: list };
+}
+
+// 推荐歌单标签（推荐歌单 tab）
+async function getRecommendSheetTags() {
+  return {
+    pinned: [{ id: 'all', title: '全部榜单' }],
+    data: [
+      {
+        title: '网易云',
+        data: [{ id: 'netease', title: '官方榜单' }],
+      },
+    ],
+  };
+}
+
+// 按标签返回推荐歌单（以官方榜单作为推荐内容；MetingAPI 无个性化推荐 feed）
+async function getRecommendSheetsByTag(tag, page) {
+  return { isEnd: true, data: RANKINGS.map(rankingToSheet) };
+}
+
 module.exports = {
   platform: 'Meting 聚合源',
   version: CURRENT_VERSION,
-  author: 'Buddy (WorkBuddy)',
+  author: '33117',
   description:
-    '适配 metowolf/Meting-API(Hono) 的多平台聚合音源（网易云/QQ/酷狗/百度/酷我）。未填 apiBase 时自动用公共公益实例搜索 + injahow 兜底播放，开箱即用；填了自建 Vercel 地址后更快更全更稳。',
+    '适配 metowolf/Meting-API(Hono) 的多平台聚合音源（网易云/QQ/酷狗/百度/酷我）。内置网易云官方榜单 11 个 + 推荐歌单，免鉴权即可看榜；未填 apiBase 时自动用公共公益实例搜索 + injahow 兜底播放，开箱即用；填了自建 Vercel 地址后更快更全更稳。',
   srcUrl: SRC_URL,
   cacheControl: 'no-cache',
   supportedSearchType: ['music'],
@@ -364,6 +436,12 @@ module.exports = {
   PUBLIC_SEARCH_API,
   CURRENT_VERSION,
   SRC_URL,
+  RANKINGS,
+  rankingToSheet,
+  getTopLists,
+  getTopListDetail,
+  getRecommendSheetTags,
+  getRecommendSheetsByTag,
 
   search,
   getMediaSource,
@@ -371,4 +449,8 @@ module.exports = {
   getMusicSheetInfo,
   getAlbumInfo,
   importMusicSheet,
+  getTopLists,
+  getTopListDetail,
+  getRecommendSheetTags,
+  getRecommendSheetsByTag,
 };
