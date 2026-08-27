@@ -25,7 +25,7 @@
  *   search/song/album/artist/playlist 不需鉴权。
  *
  * 容灾：
- *   搜索   = 你的 apiBase（自建 Vercel）→ 失败回退 bilibili.uno（公共）
+ *   搜索   = 你的 apiBase（自建 Vercel）→ 失败回退「网易云官方搜索接口」+ 公共 MetingAPI 实例池
  *   播放/歌词 = 你的 apiBase（需 token 签名）→ 失败回退 injahow（无 auth）
  *
  * 安全：本插件只做「请求转发 + 格式转换」，不收集任何信息；
